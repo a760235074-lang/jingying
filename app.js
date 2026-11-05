@@ -183,11 +183,18 @@ function startData() {
   S.tab = 'today';
   const cols = ['users', 'students', 'classes', 'sessions'];
   if (isAdmin()) cols.push('payments');
-  for (const c of cols) sub(collection(fs, c), snap => {
-    S[c] = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    setSync(snap.metadata.fromCache ? '離線中' : '已同步');
-    render();
-  });
+  const cached = {};
+  const syncLabel = () => setSync(Object.values(cached).some(Boolean) ? (navigator.onLine ? '同步中…' : '離線中') : '已同步');
+  for (const c of cols) {
+    cached[c] = true;
+    S.unsubs.push(onSnapshot(collection(fs, c), { includeMetadataChanges: true }, snap => {
+      cached[c] = snap.metadata.fromCache; syncLabel();
+      if (S[c]._ok && snap.docChanges().length === 0) return; // 只有同步狀態改變，資料沒變
+      S[c] = snap.docs.map(d => ({ id: d.id, ...d.data() })); S[c]._ok = true;
+      render();
+    }, err => { if (err.code !== 'permission-denied') setSync('同步中斷'); }));
+  }
+  window.addEventListener('online', syncLabel); window.addEventListener('offline', syncLabel);
   sub(doc(fs, 'meta', 'settings'), snap => { if (snap.exists()) S.settings = { locations: [], absentDeducts: true, ...snap.data() }; render(); });
   if (isAdmin()) sub(doc(fs, 'meta', 'rates'), snap => { S.rates = snap.exists() ? snap.data() : {}; render(); });
   renderTabs(); render();
