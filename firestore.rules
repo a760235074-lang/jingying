@@ -45,5 +45,6 @@ service cloud.firestore {
     match /classes/{id}  { allow read: if isStaff(); allow write: if isAdmin(); }
     match /payments/{id} { allow read, write: if isAdmin(); }
     match /sessions/{id} { allow read, write: if isStaff(); }
+    match /leads/{id}    { allow read, create, update: if isStaff(); allow delete: if isAdmin(); }
   }
 }
