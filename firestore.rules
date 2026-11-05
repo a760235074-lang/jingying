@@ -1,0 +1,49 @@
+rules_version = '2';
+// 菁鷹直排輪 — Firestore 安全規則
+// 管理員：全部可讀寫。教練：讀課表、學員、點名；只能寫點名紀錄。收費與鐘點費只有管理員看得到。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function role() { return get(myDoc()).data.role; }
+    function hasProfile() { return signedIn() && exists(myDoc()); }
+    function isStaff() { return hasProfile() && role() in ['admin', 'coach']; }
+    function isAdmin() { return hasProfile() && role() == 'admin'; }
+    function ownerDoc() { return /databases/$(database)/documents/meta/owner; }
+
+    // 帳號資料
+    match /users/{uid} {
+      allow read: if isStaff() || (signedIn() && request.auth.uid == uid);
+      // 自己註冊：只能建立「等待開通」；或在還沒有管理員時，成為第一位管理員
+      allow create: if signedIn() && request.auth.uid == uid && (
+        request.resource.data.role == 'pending' ||
+        (request.resource.data.role == 'admin'
+          && !exists(ownerDoc())
+          && getAfter(ownerDoc()).data.uid == uid)
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    // 第一位管理員標記（只會建立一次）
+    match /meta/owner {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      allow update, delete: if false;
+    }
+    match /meta/settings {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+    match /meta/rates {
+      allow read, write: if isAdmin();
+    }
+
+    match /students/{id} { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /classes/{id}  { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /payments/{id} { allow read, write: if isAdmin(); }
+    match /sessions/{id} { allow read, write: if isStaff(); }
+  }
+}
