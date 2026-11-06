@@ -1,5 +1,5 @@
 // 菁鷹直排輪 課務管理 — 管理員 / 教練 雙身分版本（Firebase）
-import { firebaseConfig } from './config.js';
+import { firebaseConfig } from './config.js?v=6';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   signOut, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
