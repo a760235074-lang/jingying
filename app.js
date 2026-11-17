@@ -528,22 +528,32 @@ function timeHistory(sid, item) {
     <div class="sec-h"><h3>全部紀錄</h3><span class="sub">${list.length} 次，點一筆可以修改</span></div>
     <div class="list">${[...list].reverse().map(r => `<button class="item" data-act="editTime" data-id="${r.id}" data-back="hist"><div class="grow"><div class="t">${esc(r.date)}${r.id === best.id ? ' <span class="pill ok">最佳</span>' : ''}</div><div class="s">${esc([userName(r.by), r.note].filter(Boolean).join(' · '))}</div></div><span class="tbig">${tHtml(r.time)}</span></button>`).join('')}</div>`);
 }
-const swBlock = hint => `<div class="sw"><div class="sw-d" id="sw-d">0.00</div>
-  <div class="sw-row"><button type="button" class="btn sw-go" id="sw-go">開始計時</button><button type="button" class="btn ghost" id="sw-re">歸零</button></div>
+const swBlock = (hint, lap) => `<div class="sw"><div class="sw-d" id="sw-d">0.00</div>
+  <div class="sw-row"><button type="button" class="btn sw-go${lap ? ' lap' : ''}" id="sw-go">開始計時</button><button type="button" class="btn ghost" id="sw-re">歸零</button></div>
   <div class="sw-hint" id="sw-hint">${hint}</div></div>`;
-function stopwatch(sh, onStop) {
-  const d = $('#sw-d', sh), go = $('#sw-go', sh), re = $('#sw-re', sh);
-  let t0 = 0, run = false;
+// o 可以是 onStop 函式，或 { onStop, onLap, onStart, onReset }。
+// 有 onLap 時是「連續記錄」：計時中每按一次大按鈕就記一筆，時間繼續跑，按「結束」才停。
+function stopwatch(sh, o) {
+  if (typeof o === 'function') o = { onStop: o };
+  const d = $('#sw-d', sh), go = $('#sw-go', sh), re = $('#sw-re', sh), lap = !!o.onLap;
+  let t0 = 0, run = false, n = 0, lock = null;
   const fmt = x => { const m = Math.floor(x / 60), r = (x - m * 60).toFixed(2); return m ? m + ':' + (+r < 10 ? '0' : '') + r : r; };
-  const tick = () => { if (!run || !d.isConnected) { run = false; return; } d.textContent = fmt((performance.now() - t0) / 1000); requestAnimationFrame(tick); };
-  const toggle = () => {
-    if (!run) { t0 = performance.now(); run = true; go.textContent = '停止'; go.classList.add('run'); tick(); }
-    else { const t = Math.max(0.01, Math.round((performance.now() - t0) / 10) / 100); run = false; d.textContent = fmt(t); go.textContent = '重新計時'; go.classList.remove('run'); onStop(t); }
+  const elapsed = () => Math.max(0.01, Math.round((Date.now() - t0) / 10) / 100);
+  const unlock = () => { try { if (lock) lock.release(); } catch (_) {} lock = null; };
+  const idle = label => { run = false; unlock(); go.textContent = label; go.classList.remove('run'); re.textContent = '歸零'; };
+  const tick = () => { if (!run) return; if (!d.isConnected) { run = false; unlock(); return; } d.textContent = fmt((Date.now() - t0) / 1000); requestAnimationFrame(tick); };
+  const start = () => {
+    t0 = Date.now(); run = true; n = 0; go.classList.add('run'); go.textContent = lap ? '記一筆' : '停止'; if (lap) re.textContent = '結束';
+    // 計時中不要讓螢幕自動關閉（不支援的手機會略過）
+    try { if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { if (run) lock = l; else l.release(); }).catch(() => {}); } catch (_) {}
+    if (o.onStart) o.onStart(); tick();
   };
-  // 手指一碰到就計時，不等放開，計時比較準；鍵盤操作走 click
-  go.addEventListener('pointerdown', e => { e.preventDefault(); toggle(); });
-  go.addEventListener('click', e => { if (e.detail === 0) toggle(); });
-  re.onclick = () => { run = false; d.textContent = '0.00'; go.textContent = '開始計時'; go.classList.remove('run'); };
+  const stop = () => { const t = elapsed(); d.textContent = fmt(t); idle('重新計時'); if (o.onStop) o.onStop(t, n); };
+  const press = () => { if (!run) start(); else if (lap) { const t = elapsed(); n++; go.textContent = `記一筆（已記 ${n}）`; o.onLap(t, n); } else stop(); };
+  // 手指一碰到就算，不等放開，計時比較準；鍵盤操作走 click
+  go.addEventListener('pointerdown', e => { e.preventDefault(); press(); });
+  go.addEventListener('click', e => { if (e.detail === 0) press(); });
+  re.onclick = () => { if (run && lap) stop(); else { d.textContent = '0.00'; idle('開始計時'); if (o.onReset) o.onReset(); } };
 }
 function timeForm(rec, o = {}) {
   const editing = !!(rec && rec.id);
@@ -586,23 +596,51 @@ function classTimeForm(cid, date) {
   openSheet('測秒速 · ' + c.name, `<form class="form" id="f">
     <div class="two"><div class="field"><label for="ct-item">項目</label><input id="ct-item" list="dl-titem" required value="${esc(lastItem())}" placeholder="100 公尺">${dataList('dl-titem', timeItems())}</div>
     <div class="field"><label for="ct-date">日期</label><input id="ct-date" type="date" required value="${esc(date || today())}"></div></div>
-    ${swBlock('')}
+    ${swBlock('', true)}
+    <div id="ct-caps"></div>
+    <div class="assign" id="ct-assign" hidden></div>
     <div class="list" id="ct-list">${studs.map(s => `<div class="att trow" data-sid="${s.id}"><button type="button" class="grow tname" data-pick="${s.id}"><span class="nm">${esc(s.name)}</span><span class="sub" data-pb="${s.id}"></span></button>
       <input class="tin" id="ct-${s.id}" inputmode="decimal" autocomplete="off" placeholder="秒數" aria-label="${esc(s.name)} 的秒數"></div>`).join('')}</div>
-    <div class="sub">點學員的名字可以指定碼錶要記給誰；也可以直接在右邊輸入秒數。沒測的人留空白。</div>
+    <div class="sub">也可以不用碼錶，直接在右邊輸入秒數。沒測的人留空白。</div>
     <button class="btn" type="submit">儲存秒數</button></form>`, sh => {
-    const item = $('#ct-item', sh), list = $('#ct-list', sh), hintEl = $('#sw-hint', sh);
-    const inp = sid => document.getElementById('ct-' + sid);
-    let target = null;
-    const setTarget = sid => { target = sid; list.querySelectorAll('.trow').forEach(x => x.classList.toggle('on', x.dataset.sid === sid)); const s = sid && stuById(sid); hintEl.textContent = s ? `碼錶停止後，秒數會記給：${s.name}` : '全班都有秒數了，可以按「儲存秒數」。'; };
-    const nextEmpty = () => { const s = studs.find(x => !inp(x.id).value.trim()); return s ? s.id : null; };
+    const item = $('#ct-item', sh), list = $('#ct-list', sh), hintEl = $('#sw-hint', sh), capsEl = $('#ct-caps', sh), bar = $('#ct-assign', sh);
+    const inp = sid => document.getElementById('ct-' + sid), val = t => t.toFixed(2);
+    // caps：碼錶先記下來、還沒（或已經）分配給學員的秒數；cur：現在要分配的那一筆
+    const caps = []; let cur = null, seq = 0, running = false;
+    const draw = () => {
+      const pend = caps.filter(x => !x.sid);
+      let k = caps.find(x => x.id === cur); if (!k) { k = pend[0]; cur = k ? k.id : null; }
+      capsEl.innerHTML = caps.length ? `<div class="caps">${caps.map(x => { const s = x.sid && stuById(x.sid); return `<span class="cap${x.id === cur ? ' on' : ''}${s ? ' done' : ''}"><button type="button" class="cap-b" data-cap="${x.id}"><span class="cap-n">${x.old ? '上一趟 ' : ''}第 ${x.n} 位</span><span class="cap-t">${fmtTime(x.t)}</span><span class="cap-s">${s ? esc(s.name) : '待分配'}</span></button><button type="button" class="cap-x" data-capdel="${x.id}" aria-label="刪除第 ${x.n} 位的 ${fmtTime(x.t)}">✕</button></span>`; }).join('')}</div>` : '';
+      bar.hidden = !k; if (k) bar.innerHTML = `<b>${k.old ? '上一趟 ' : ''}第 ${k.n} 位 ${fmtTime(k.t)}</b>是誰？點下面學員的名字${k.sid ? '，會改記給他' : ''}`;
+      hintEl.textContent = running ? '每到一位就按一次「記一筆」，全部到了再按「結束」。' : !caps.length ? '全班一起出發：按「開始計時」，每到一位按一次「記一筆」。秒數先記下來，結束後再分配給學員。' : pend.length ? `還有 ${pend.length} 筆秒數沒分配。按錯的可以按 ✕ 刪掉。` : '都分配好了，可以按「儲存秒數」。';
+    };
+    const assign = sid => {
+      const k = caps.find(x => x.id === cur); if (!k) { inp(sid).focus(); return; }
+      for (const x of caps) if (x.sid === sid && x !== k) x.sid = null;
+      if (k.sid && k.sid !== sid && inp(k.sid).value === val(k.t)) inp(k.sid).value = '';
+      k.sid = sid; inp(sid).value = val(k.t);
+      const next = caps.find(x => !x.sid); cur = next ? next.id : null; draw();
+    };
     const pbs = () => { const it = item.value.trim(); for (const s of studs) { const b = it ? bestTime(s.id, it) : Infinity; list.querySelector(`[data-pb="${s.id}"]`).textContent = b < Infinity ? `最佳 ${fmtTime(b)}` : (it ? '還沒有紀錄' : ''); } };
-    item.oninput = pbs; pbs(); setTarget(studs[0].id);
-    list.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) setTarget(b.dataset.pick); });
-    stopwatch(sh, t => { if (!target) return; inp(target).value = t.toFixed(2); setTarget(nextEmpty()); });
+    item.oninput = pbs; pbs(); draw();
+    list.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) assign(b.dataset.pick); });
+    capsEl.addEventListener('click', e => {
+      const x = e.target.closest('[data-capdel]');
+      if (x) { const i = caps.findIndex(k => k.id === x.dataset.capdel); if (i < 0) return; const k = caps[i]; if (k.sid && inp(k.sid).value === val(k.t)) inp(k.sid).value = ''; caps.splice(i, 1); if (cur === k.id) cur = null; draw(); return; }
+      const b = e.target.closest('[data-cap]'); if (b) { cur = b.dataset.cap; draw(); }
+    });
+    stopwatch(sh, {
+      // 新的一趟：已經分配好的秒數留在學員欄位裡，從清單收掉；還沒分配的留著，標成「上一趟」
+      onStart: () => { running = true; for (let i = caps.length - 1; i >= 0; i--) { if (caps[i].sid) caps.splice(i, 1); else caps[i].old = true; } cur = null; draw(); },
+      onLap: (t, n) => { caps.push({ id: 'k' + (++seq), t, n }); draw(); },
+      onStop: (t, n) => { running = false; if (!n) caps.push({ id: 'k' + (++seq), t, n: 1 }); draw(); },
+      onReset: () => { running = false; caps.length = 0; cur = null; draw(); }
+    });
     $('#f', sh).onsubmit = async e => {
       e.preventDefault();
       const it = item.value.trim(), dt = $('#ct-date', sh).value; if (!it || !dt) return;
+      const pend = caps.filter(x => !x.sid).length;
+      if (pend) { toast(`還有 ${pend} 筆秒數沒分配。點學員的名字分配，或按 ✕ 刪掉再儲存。`); return; }
       const recs = [];
       for (const s of studs) { const el = inp(s.id), v = el.value.trim(); if (!v) continue; const t = parseTime(v); if (!(t > 0)) { toast(`${s.name} 的秒數格式不對，請輸入像 12.34`); el.focus(); return; } recs.push({ s, t }); }
       if (!recs.length) { toast('還沒有輸入任何秒數'); return; }
