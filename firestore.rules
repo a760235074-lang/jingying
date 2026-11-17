@@ -46,5 +46,11 @@ service cloud.firestore {
     match /payments/{id} { allow read, write: if isAdmin(); }
     match /sessions/{id} { allow read, write: if isStaff(); }
     match /leads/{id}    { allow read, create, update: if isStaff(); allow delete: if isAdmin(); }
+    // 秒速紀錄：教練都能看、能新增；修改和刪除限記錄的人或管理員
+    match /times/{id} {
+      allow read: if isStaff();
+      allow create: if isStaff() && request.resource.data.by == request.auth.uid;
+      allow update, delete: if isAdmin() || (isStaff() && resource.data.by == request.auth.uid);
+    }
   }
 }

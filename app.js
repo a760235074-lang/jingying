@@ -34,10 +34,10 @@ catch (_) { fs = initializeFirestore(fb, {}); }
 
 /* ---------- 狀態 ---------- */
 const S = {
-  me: null, profile: null, users: [], students: [], classes: [], payments: [], sessions: [], leads: [],
+  me: null, profile: null, users: [], students: [], classes: [], payments: [], sessions: [], leads: [], times: [],
   settings: { locations: [], absentDeducts: true }, rates: {},
   tab: 'today', day: ymd(new Date()), q: '', month: ymd(new Date()).slice(0, 7), mine: true, unsubs: [],
-  stuTab: 'students', stFilter: 'active', tag: '', leadFilter: 'open', moreTab: 'stats', year: new Date().getFullYear()
+  stuTab: 'students', stFilter: 'active', tag: '', leadFilter: 'open', moreTab: 'stats', year: new Date().getFullYear(), timeItem: '', timeLevel: ''
 };
 const isAdmin = () => S.profile && S.profile.role === 'admin';
 const userName = uid => { const u = S.users.find(x => x.id === uid); return u ? (u.name || u.email) : ''; };
@@ -182,7 +182,7 @@ function sub(ref, fn) {
 function startData() {
   $('#nav').hidden = false;
   S.tab = 'today';
-  const cols = ['users', 'students', 'classes', 'sessions', 'leads'];
+  const cols = ['users', 'students', 'classes', 'sessions', 'leads', 'times'];
   if (isAdmin()) cols.push('payments');
   const cached = {};
   const syncLabel = () => setSync(Object.values(cached).some(Boolean) ? (navigator.onLine ? '同步中…' : '離線中') : '已同步');
@@ -193,7 +193,7 @@ function startData() {
       if (S[c]._ok && snap.docChanges().length === 0) return; // 只有同步狀態改變，資料沒變
       S[c] = snap.docs.map(d => ({ id: d.id, ...d.data() })); S[c]._ok = true;
       render();
-    }, err => { if (err.code !== 'permission-denied') setSync('同步中斷'); }));
+    }, err => { cached[c] = false; if (err.code !== 'permission-denied') setSync('同步中斷'); else syncLabel(); }));
   }
   window.addEventListener('online', syncLabel); window.addEventListener('offline', syncLabel);
   sub(doc(fs, 'meta', 'settings'), snap => { if (snap.exists()) S.settings = { locations: [], absentDeducts: true, ...snap.data() }; render(); });
@@ -357,8 +357,8 @@ function stuItem(s) {
   <div class="s">${esc(cls || '尚未加入班級')}${s.parent ? ' · ' + esc(s.parent) : ''}</div></div>${leftPill(s.id)}</button>`;
 }
 function vStudents() {
-  let h = seg('stuTab', S.stuTab, [['students', `學員（${S.students.filter(s => !s.archived).length}）`], ['leads', `招生名單（${S.leads.filter(leadOpen).length}）`]]);
-  return `<div class="view">${h}${S.stuTab === 'leads' ? vLeads() : vStuList()}</div>`;
+  let h = seg('stuTab', S.stuTab, [['students', `學員（${S.students.filter(s => !s.archived).length}）`], ['times', '秒速紀錄'], ['leads', `招生名單（${S.leads.filter(leadOpen).length}）`]]);
+  return `<div class="view">${h}${S.stuTab === 'leads' ? vLeads() : S.stuTab === 'times' ? vTimes() : vStuList()}</div>`;
 }
 function vStuList() {
   let h = `<div class="row"><h2 class="vt grow">學員</h2>${A() ? '<button class="btn acc sm" data-act="newStudent">＋ 學員</button>' : ''}</div>`;
@@ -440,6 +440,177 @@ async function convertLead(id) {
     await b.commit(); toast(l.name + ' 已轉成正式學員'); closeSheet();
     setTimeout(() => { S.tab = 'students'; S.stuTab = 'students'; renderTabs(); render(); studentForm(stuById(sid) || { id: sid, name: l.name }); }, 400);
   } catch (e) { toast(fbErr(e)); }
+}
+
+/* ---------- 秒速紀錄 ---------- */
+const TIME_ITEMS = ['100 公尺', '200 公尺', '300 公尺', '500 公尺', '1000 公尺', '速度過樁'];
+const timeItems = () => [...new Set([...S.times.map(t => t.item).filter(Boolean), ...TIME_ITEMS])];
+// 接受 12.34、12秒34、1:02.34、1分02.34；回傳秒數（最多三位小數），格式不對回傳 NaN
+function parseTime(v) {
+  const x = String(v == null ? '' : v).trim().replace(/秒(?=\d)/g, '.').replace(/[秒\s]/g, '').replace(/[：'’′分]/g, ':');
+  const p = x.split(':');
+  if (!x || p.length > 2 || p.some(k => !/^\d+(\.\d+)?$/.test(k)) || (p.length === 2 && !/^\d+$/.test(p[0]))) return NaN;
+  const t = p.length === 2 ? +p[0] * 60 + +p[1] : +p[0];
+  return t > 0 && t < 36000 ? Math.round(t * 1000) / 1000 : NaN;
+}
+function fmtTime(t) {
+  if (!(t > 0)) return '—';
+  const m = Math.floor(t / 60); let x = (t - m * 60).toFixed(3).replace(/0$/, '');
+  return m ? m + ':' + (+x < 10 ? '0' : '') + x : x;
+}
+const tHtml = t => fmtTime(t) + (t < 60 ? '<small>秒</small>' : '');
+const sortTimes = list => [...list].sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.createdAt || 0) - (b.createdAt || 0));
+const fastest = list => list.reduce((a, b) => b.time < a.time ? b : a);
+const bestTime = (sid, item, exceptId) => { let m = Infinity; for (const t of S.times) if (t.studentId === sid && t.item === item && t.id !== exceptId && t.time < m) m = t.time; return m; };
+const lastItem = () => { let l = null; for (const t of S.times) if (!l || (t.createdAt || 0) > (l.createdAt || 0)) l = t; return l ? l.item : ''; };
+const shortDate = d => !d ? '' : d.startsWith(today().slice(0, 5)) ? d.slice(5).replace('-', '/') : d.replace(/-/g, '/');
+const gainText = (first, best) => { const g = first.time - best.time; return g > 0.004 ? ` · 進步 ${g.toFixed(2)} 秒` : ''; };
+
+function vTimes() {
+  let h = `<div class="row"><h2 class="vt grow">秒速紀錄</h2><button class="btn acc sm" data-act="newTime" ${S.students.length ? '' : 'disabled'}>＋ 秒速</button></div>`;
+  const todays = classesOn(today()).filter(c => (c.studentIds || []).length);
+  if (todays.length) h += `<div class="card"><div class="sub" style="margin-bottom:8px">今天的班級，一次記整班</div><div class="row wrap">${todays.map(c => `<button class="btn ghost sm" data-act="classTimes" data-id="${c.id}" data-d="${today()}">${esc(c.start)} ${esc(c.name)}</button>`).join('')}</div></div>`;
+  if (!S.times.length) return h + `<div class="empty"><b>還沒有秒速紀錄</b><span>幫學員計時後記在這裡，會自動算出每個人的最佳成績、進步幅度和排行榜。手機可以直接當碼錶用。</span>${S.students.length ? '<button class="btn" data-act="newTime">記第一筆秒速</button>' : '<span>先到「學員」新增學員。</span>'}</div>`;
+  const cnt = {}; for (const t of S.times) cnt[t.item] = (cnt[t.item] || 0) + 1;
+  const items = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || a.localeCompare(b, 'zh-Hant'));
+  const item = items.includes(S.timeItem) ? S.timeItem : items[0];
+  h += chips('timeItem', item, items.map(i => [i, esc(i)]));
+  const rows = {};
+  for (const t of sortTimes(S.times.filter(t => t.item === item))) {
+    const s = stuById(t.studentId); if (!s || s.archived) continue;
+    const r = rows[s.id] || (rows[s.id] = { s, best: t, first: t, n: 0 });
+    r.n++; if (t.time < r.best.time) r.best = t;
+  }
+  let rank = Object.values(rows);
+  const lvls = LEVELS.filter(l => rank.some(r => r.s.level === l));
+  const lv = lvls.includes(S.timeLevel) ? S.timeLevel : '';
+  if (lvls.length > 1) h += chips('timeLevel', lv, [['', '全部程度'], ...lvls.map(l => [l, l])]);
+  if (lv) rank = rank.filter(r => r.s.level === lv);
+  rank.sort((a, b) => a.best.time - b.best.time || (a.best.date || '').localeCompare(b.best.date || ''));
+  const m = today().slice(0, 7), monthN = S.times.filter(t => t.item === item && (t.date || '').startsWith(m)).length;
+  h += `<div class="stats"><div class="stat"><div class="k">最快</div><div class="v">${rank.length ? fmtTime(rank[0].best.time) : '—'}</div></div>
+    <div class="stat"><div class="k">有紀錄的學員</div><div class="v">${rank.length}<small>位</small></div></div>
+    <div class="stat"><div class="k">本月測驗</div><div class="v">${monthN}<small>次</small></div></div></div>`;
+  h += `<div class="sec-h"><h3>${esc(item)} 排行榜</h3><span class="sub">依個人最佳成績</span></div>`;
+  h += rank.length ? `<div class="list">${rank.map((r, i) => `<button class="item" data-act="timeHist" data-sid="${r.s.id}" data-item="${esc(item)}"><span class="rk num${i === 0 ? ' top' : ''}">${i + 1}</span>
+    <div class="grow"><div class="t">${esc(r.s.name)} ${r.s.level ? `<span class="pill info">${esc(r.s.level)}</span>` : ''}</div><div class="s">${esc(shortDate(r.best.date))} · 共 ${r.n} 次${gainText(r.first, r.best)}</div></div>
+    <span class="tbig">${tHtml(r.best.time)}</span></button>`).join('')}</div>` : '<div class="empty">這個程度還沒有紀錄</div>';
+  const recent = [...S.times].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8);
+  h += `<div class="sec-h"><h3>最近記錄</h3><span class="sub">點一筆可以修改</span></div><div class="list">${recent.map(t => { const s = stuById(t.studentId); return `<button class="item" data-act="editTime" data-id="${t.id}"><div class="grow"><div class="t">${esc(s ? s.name : '（已刪除學員）')}</div><div class="s">${esc(shortDate(t.date))} · ${esc(t.item)}${t.note ? ' · ' + esc(t.note) : ''}</div></div><span class="tbig">${tHtml(t.time)}</span></button>`; }).join('')}</div>`;
+  return h;
+}
+function stuTimesHtml(id) {
+  const byItem = {}; for (const t of sortTimes(S.times.filter(t => t.studentId === id))) (byItem[t.item] = byItem[t.item] || []).push(t);
+  const ks = Object.keys(byItem);
+  return `<div class="sec-h"><h3>秒速紀錄</h3><button class="btn ghost sm" data-act="newTime" data-sid="${id}" data-back="student">＋ 秒速</button></div>
+    ${ks.length ? `<div class="list">${ks.map(it => { const l = byItem[it], best = fastest(l); return `<button class="item" data-act="timeHist" data-sid="${id}" data-item="${esc(it)}"><div class="grow"><div class="t">${esc(it)}</div><div class="s">${esc(shortDate(best.date))} · 共 ${l.length} 次${gainText(l[0], best)}</div></div><span class="tbig">${tHtml(best.time)}</span><span class="chev">›</span></button>`; }).join('')}</div>` : '<div class="empty">還沒有秒速紀錄</div>'}`;
+}
+function timeChart(list) {
+  const W = 320, H = 130, L = 50, R = 12, T = 14, B = 26;
+  const ts = list.map(r => r.time), mn = Math.min(...ts), mx = Math.max(...ts), span = (mx - mn) || 1, bi = ts.indexOf(mn);
+  const x = i => (L + (W - L - R) * i / (list.length - 1)).toFixed(1), y = t => (T + (H - T - B) * (1 - (t - mn) / span)).toFixed(1);
+  return `<svg class="tchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${list.length} 次成績，從 ${fmtTime(list[0].time)} 到最佳 ${fmtTime(mn)}">
+    <line class="g" x1="${L}" y1="${T}" x2="${W - R}" y2="${T}"/><line class="g" x1="${L}" y1="${H - B}" x2="${W - R}" y2="${H - B}"/>
+    ${mx > mn ? `<text x="${L - 8}" y="${T + 4}" text-anchor="end">${fmtTime(mx)}</text>` : ''}<text x="${L - 8}" y="${H - B + 4}" text-anchor="end">${fmtTime(mn)}</text>
+    <polyline class="ln" fill="none" points="${list.map((r, i) => x(i) + ',' + y(r.time)).join(' ')}"/>
+    ${list.map((r, i) => `<circle class="${i === bi ? 'pb' : 'pt'}" cx="${x(i)}" cy="${y(r.time)}" r="${i === bi ? 5 : 3.5}"/>`).join('')}
+    <text x="${L}" y="${H - 6}" text-anchor="start">${esc((list[0].date || '').slice(5).replace('-', '/'))}</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${esc((list[list.length - 1].date || '').slice(5).replace('-', '/'))}</text></svg>`;
+}
+function timeHistory(sid, item) {
+  const s = stuById(sid); if (!s) return closeSheet();
+  const list = sortTimes(S.times.filter(t => t.studentId === sid && t.item === item));
+  if (!list.length) return openStudent(sid);
+  const best = fastest(list), gain = list[0].time - best.time;
+  openSheet(`${s.name} · ${item}`, `
+    <div class="card"><div class="sub">個人最佳</div><div class="big-left"><span class="v">${fmtTime(best.time)}</span><span class="sub">${best.time < 60 ? '秒 · ' : ''}${esc(best.date)}</span></div>
+    ${list.length > 1 ? timeChart(list) + `<div class="sub">${gain > 0.004 ? `比第一次快了 ${gain.toFixed(2)} 秒。` : ''}線越低代表越快，實心圓點是最佳成績。</div>` : '<div class="sub">再記一筆就會畫出進步曲線。</div>'}</div>
+    <div class="row wrap"><button class="btn acc sm" data-act="newTime" data-sid="${sid}" data-item="${esc(item)}" data-back="hist">＋ 再記一筆</button><button class="btn ghost sm" data-act="student" data-id="${sid}">回到學員資料</button></div>
+    <div class="sec-h"><h3>全部紀錄</h3><span class="sub">${list.length} 次，點一筆可以修改</span></div>
+    <div class="list">${[...list].reverse().map(r => `<button class="item" data-act="editTime" data-id="${r.id}" data-back="hist"><div class="grow"><div class="t">${esc(r.date)}${r.id === best.id ? ' <span class="pill ok">最佳</span>' : ''}</div><div class="s">${esc([userName(r.by), r.note].filter(Boolean).join(' · '))}</div></div><span class="tbig">${tHtml(r.time)}</span></button>`).join('')}</div>`);
+}
+const swBlock = hint => `<div class="sw"><div class="sw-d" id="sw-d">0.00</div>
+  <div class="sw-row"><button type="button" class="btn sw-go" id="sw-go">開始計時</button><button type="button" class="btn ghost" id="sw-re">歸零</button></div>
+  <div class="sw-hint" id="sw-hint">${hint}</div></div>`;
+function stopwatch(sh, onStop) {
+  const d = $('#sw-d', sh), go = $('#sw-go', sh), re = $('#sw-re', sh);
+  let t0 = 0, run = false;
+  const fmt = x => { const m = Math.floor(x / 60), r = (x - m * 60).toFixed(2); return m ? m + ':' + (+r < 10 ? '0' : '') + r : r; };
+  const tick = () => { if (!run || !d.isConnected) { run = false; return; } d.textContent = fmt((performance.now() - t0) / 1000); requestAnimationFrame(tick); };
+  const toggle = () => {
+    if (!run) { t0 = performance.now(); run = true; go.textContent = '停止'; go.classList.add('run'); tick(); }
+    else { const t = Math.max(0.01, Math.round((performance.now() - t0) / 10) / 100); run = false; d.textContent = fmt(t); go.textContent = '重新計時'; go.classList.remove('run'); onStop(t); }
+  };
+  // 手指一碰到就計時，不等放開，計時比較準；鍵盤操作走 click
+  go.addEventListener('pointerdown', e => { e.preventDefault(); toggle(); });
+  go.addEventListener('click', e => { if (e.detail === 0) toggle(); });
+  re.onclick = () => { run = false; d.textContent = '0.00'; go.textContent = '開始計時'; go.classList.remove('run'); };
+}
+function timeForm(rec, o = {}) {
+  const editing = !!(rec && rec.id);
+  const r = rec || { studentId: o.sid || '', item: o.item || lastItem(), date: today() };
+  const mine = !editing || A() || r.by === S.me.uid;
+  const studs = S.students.filter(s => !s.archived || s.id === r.studentId).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant'));
+  const goBack = (sid, item) => { if (o.back === 'hist') timeHistory(sid, item); else if (o.back === 'student') openStudent(sid); else closeSheet(); };
+  openSheet(editing ? '修改秒速紀錄' : '記錄秒速', `<form class="form" id="f">
+    <div class="field"><label for="t-stu">學員</label><select id="t-stu" required><option value="">選擇學員</option>${studs.map(s => `<option value="${s.id}" ${r.studentId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select></div>
+    <div class="two"><div class="field"><label for="t-item">項目</label><input id="t-item" list="dl-titem" required value="${esc(r.item)}" placeholder="100 公尺">${dataList('dl-titem', timeItems())}</div>
+    <div class="field"><label for="t-date">日期</label><input id="t-date" type="date" required value="${esc(r.date)}"></div></div>
+    ${editing ? '' : swBlock('按「停止」後，秒數會自動填到下面')}
+    <div class="field"><label for="t-time">秒數</label><input id="t-time" class="tin wide" inputmode="decimal" autocomplete="off" required value="${editing ? fmtTime(r.time) : ''}" placeholder="12.34"><span class="sub">超過一分鐘可以寫 1:02.34。</span><span class="sub" id="t-pb"></span></div>
+    <div class="field"><label for="t-note">備註</label><input id="t-note" value="${esc(r.note)}" placeholder="比賽成績、換新輪子、場地濕…"></div>
+    ${mine ? `<button class="btn" type="submit">${editing ? '儲存' : '記錄秒數'}</button>` : '<div class="sub">只有記錄的教練或管理員可以修改這筆紀錄。</div>'}
+    ${editing && mine ? delBlock('times', r.id, '這筆紀錄') : ''}</form>`, sh => {
+    const stu = $('#t-stu', sh), item = $('#t-item', sh), time = $('#t-time', sh), pb = $('#t-pb', sh);
+    const hint = () => { const sid = stu.value, it = item.value.trim(); if (!sid || !it) { pb.textContent = ''; return; } const b = bestTime(sid, it, r.id); pb.textContent = b < Infinity ? `目前最佳 ${fmtTime(b)}` : '這個項目還沒有紀錄，這會是第一筆。'; };
+    stu.onchange = hint; item.oninput = hint; hint();
+    if (!editing) stopwatch(sh, t => { time.value = t.toFixed(2); });
+    $('#f', sh).onsubmit = async e => {
+      e.preventDefault(); if (!mine) return;
+      const t = parseTime(time.value), sid = stu.value, it = item.value.trim();
+      if (!(t > 0)) { toast('秒數格式不對，請輸入像 12.34 或 1:02.34'); time.focus(); return; }
+      if (!sid || !it) return;
+      const prev = bestTime(sid, it, r.id);
+      const d = { studentId: sid, item: it, time: t, date: $('#t-date', sh).value, note: $('#t-note', sh).value.trim(), by: r.by || S.me.uid, createdAt: r.createdAt || Date.now() };
+      if (r.classId) d.classId = r.classId;
+      if (await save('times', r.id, d)) {
+        toast(t < prev && prev < Infinity ? `破個人紀錄！快了 ${(prev - t).toFixed(2)} 秒` : `已記錄 ${fmtTime(t)}${t < 60 ? ' 秒' : ''}`);
+        goBack(sid, it);
+      }
+    };
+  });
+}
+function classTimeForm(cid, date) {
+  const c = clsById(cid); if (!c) return;
+  const studs = (c.studentIds || []).map(stuById).filter(s => s && !s.archived);
+  if (!studs.length) return openSheet('測秒速 · ' + c.name, '<div class="empty"><b>這個班還沒有學員</b><span>先把學員加進班級，再來測秒速。</span></div>');
+  openSheet('測秒速 · ' + c.name, `<form class="form" id="f">
+    <div class="two"><div class="field"><label for="ct-item">項目</label><input id="ct-item" list="dl-titem" required value="${esc(lastItem())}" placeholder="100 公尺">${dataList('dl-titem', timeItems())}</div>
+    <div class="field"><label for="ct-date">日期</label><input id="ct-date" type="date" required value="${esc(date || today())}"></div></div>
+    ${swBlock('')}
+    <div class="list" id="ct-list">${studs.map(s => `<div class="att trow" data-sid="${s.id}"><button type="button" class="grow tname" data-pick="${s.id}"><span class="nm">${esc(s.name)}</span><span class="sub" data-pb="${s.id}"></span></button>
+      <input class="tin" id="ct-${s.id}" inputmode="decimal" autocomplete="off" placeholder="秒數" aria-label="${esc(s.name)} 的秒數"></div>`).join('')}</div>
+    <div class="sub">點學員的名字可以指定碼錶要記給誰；也可以直接在右邊輸入秒數。沒測的人留空白。</div>
+    <button class="btn" type="submit">儲存秒數</button></form>`, sh => {
+    const item = $('#ct-item', sh), list = $('#ct-list', sh), hintEl = $('#sw-hint', sh);
+    const inp = sid => document.getElementById('ct-' + sid);
+    let target = null;
+    const setTarget = sid => { target = sid; list.querySelectorAll('.trow').forEach(x => x.classList.toggle('on', x.dataset.sid === sid)); const s = sid && stuById(sid); hintEl.textContent = s ? `碼錶停止後，秒數會記給：${s.name}` : '全班都有秒數了，可以按「儲存秒數」。'; };
+    const nextEmpty = () => { const s = studs.find(x => !inp(x.id).value.trim()); return s ? s.id : null; };
+    const pbs = () => { const it = item.value.trim(); for (const s of studs) { const b = it ? bestTime(s.id, it) : Infinity; list.querySelector(`[data-pb="${s.id}"]`).textContent = b < Infinity ? `最佳 ${fmtTime(b)}` : (it ? '還沒有紀錄' : ''); } };
+    item.oninput = pbs; pbs(); setTarget(studs[0].id);
+    list.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) setTarget(b.dataset.pick); });
+    stopwatch(sh, t => { if (!target) return; inp(target).value = t.toFixed(2); setTarget(nextEmpty()); });
+    $('#f', sh).onsubmit = async e => {
+      e.preventDefault();
+      const it = item.value.trim(), dt = $('#ct-date', sh).value; if (!it || !dt) return;
+      const recs = [];
+      for (const s of studs) { const el = inp(s.id), v = el.value.trim(); if (!v) continue; const t = parseTime(v); if (!(t > 0)) { toast(`${s.name} 的秒數格式不對，請輸入像 12.34`); el.focus(); return; } recs.push({ s, t }); }
+      if (!recs.length) { toast('還沒有輸入任何秒數'); return; }
+      const b = writeBatch(fs), now = Date.now(); let n = 0;
+      recs.forEach(({ s, t }, i) => { const prev = bestTime(s.id, it); if (t < prev && prev < Infinity) n++; b.set(doc(fs, 'times', newId()), { studentId: s.id, item: it, time: t, date: dt, note: '', by: S.me.uid, createdAt: now + i, classId: cid }); });
+      try { await b.commit(); toast(`已記錄 ${recs.length} 位的秒數${n ? `，${n} 位破個人紀錄` : ''}`); closeSheet(); } catch (err) { toast(fbErr(err)); }
+    };
+  });
 }
 
 /* ---------- 收費 ---------- */
@@ -573,6 +744,7 @@ async function del(col, id) {
     if (col === 'students') {
       const b = writeBatch(fs);
       for (const c of S.classes.filter(c => (c.studentIds || []).includes(id))) b.update(doc(fs, 'classes', c.id), { studentIds: c.studentIds.filter(x => x !== id) });
+      for (const t of S.times.filter(t => t.studentId === id)) b.delete(doc(fs, 'times', t.id));
       b.delete(doc(fs, 'students', id)); await b.commit();
     } else if (col === 'payments') {
       const p = S.payments.find(x => x.id === id);
@@ -646,6 +818,7 @@ function openStudent(id) {
       ${s.joined ? `<dt>入學</dt><dd>${esc(s.joined)}</dd>` : ''}${s.source ? `<dt>來源</dt><dd>${esc(s.source)}</dd>` : ''}${s.note ? `<dt>備註</dt><dd>${esc(s.note)}</dd>` : ''}
     </dl></div>
     ${levels.length ? `<div class="sec-h"><h3>晉級 / 檢定紀錄</h3></div><div class="list">${levels.map((v, i) => `<div class="item"><div class="grow"><div class="t">${esc(v.level)}</div><div class="s">${esc(v.date)}${v.note ? ' · ' + esc(v.note) : ''}</div></div>${A() ? `<button class="btn ghost sm" data-act="delLevel" data-sid="${id}" data-i="${(s.levels || []).indexOf(v)}">刪除</button>` : ''}</div>`).join('')}</div>` : ''}
+    ${stuTimesHtml(id)}
     ${A() ? `<div class="sec-h"><h3>收費紀錄</h3></div>${pays.length ? `<div class="list">${pays.map(p => `<button class="item" data-act="editPay" data-id="${p.id}"><div class="grow"><div class="t">${esc(p.plan || '課程')} · ${esc(payDesc(p))}</div><div class="s">${esc(p.date)}${p.method ? ' · ' + esc(p.method) : ''}</div></div><span class="money">${money(p.amount)}</span></button>`).join('')}</div>` : '<div class="empty">還沒有收費紀錄</div>'}` : ''}
     <div class="sec-h"><h3>最近上課</h3></div>
     ${hist.length ? `<div class="list">${hist.map(ss => { const c = clsById(ss.classId); const [t, k] = ss.cancelled ? ['停課', 'info'] : (lbl[ss.status[id]] || ['?', 'info']); return `<div class="item"><div class="grow"><div class="t">${esc(ss.date)}${inPeriod(s, ss.date) ? ' <span class="pill tag">月費</span>' : ''}</div><div class="s">${esc(c ? c.name : '（已刪除班級）')}${ss.note ? ' · ' + esc(ss.note) : ''}</div></div><span class="pill ${k}">${t}</span></div>`; }).join('')}</div>` : '<div class="empty">還沒有點名紀錄</div>'}
@@ -764,7 +937,7 @@ function attendSheet(cid) {
   if (ss && ss.cancelled) return openSheet(title, `<div class="empty"><b>這堂已停課</b><span>${esc(ss.reason || '')}</span><span>停課不會扣任何人的堂數。</span>
     <button class="btn" id="a-undo">恢復這堂課</button></div>`, sh => { $('#a-undo', sh).onclick = async () => { if (await del('sessions', cid + '_' + S.day)) { toast('已恢復'); closeSheet(); } }; });
   openSheet(title, `
-    <div class="sub">${esc([c.start + '–' + endTime(c.start, c.duration), userName(c.coachUid), c.location].filter(Boolean).join(' · '))}</div>
+    <div class="row"><div class="sub grow">${esc([c.start + '–' + endTime(c.start, c.duration), userName(c.coachUid), c.location].filter(Boolean).join(' · '))}</div>${studs.length ? '<button class="btn ghost sm" type="button" id="a-times">測秒速</button>' : ''}</div>
     ${studs.length ? `<div class="list" id="attl">${draw()}</div>
     <div class="field"><label for="a-coach">本堂教練</label><select id="a-coach">${coachOptions((ss && ss.coachUid) || c.coachUid || S.me.uid)}</select></div>
     <div class="field"><label for="a-note">課堂紀錄</label><textarea id="a-note" placeholder="今天練了交叉步、T 字煞車…">${esc(ss && ss.note)}</textarea></div>
@@ -779,7 +952,10 @@ function attendSheet(cid) {
       if (await save('sessions', cid + '_' + S.day, d)) { toast('已停課'); closeSheet(); }
     };
     const l = $('#attl', sh); if (!l) return;
-    l.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; status[b.parentElement.dataset.sid] = b.dataset.v; l.innerHTML = draw(); });
+    let dirty = false;
+    l.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; status[b.parentElement.dataset.sid] = b.dataset.v; dirty = true; l.innerHTML = draw(); });
+    $('#a-note', sh).addEventListener('input', () => { dirty = true; });
+    $('#a-times', sh).onclick = () => { if (dirty) { toast('請先按「' + (ss ? '更新點名' : '完成點名') + '」儲存，再測秒速'); return; } classTimeForm(cid, S.day); };
     $('#a-save', sh).onclick = async () => {
       const d = { classId: cid, date: S.day, status, coachUid: $('#a-coach', sh).value, note: $('#a-note', sh).value, updatedBy: S.me.uid, updatedAt: Date.now() };
       if (await save('sessions', cid + '_' + S.day, d)) { toast('點名完成'); closeSheet(); }
@@ -824,7 +1000,7 @@ function settingsSheet() {
   });
 }
 function backup() {
-  const data = JSON.stringify({ app: '菁鷹直排輪', exportedAt: new Date().toISOString(), settings: S.settings, rates: S.rates, users: S.users, students: S.students, classes: S.classes, payments: S.payments, sessions: S.sessions, leads: S.leads }, null, 2);
+  const data = JSON.stringify({ app: '菁鷹直排輪', exportedAt: new Date().toISOString(), settings: S.settings, rates: S.rates, users: S.users, students: S.students, classes: S.classes, payments: S.payments, sessions: S.sessions, leads: S.leads, times: S.times }, null, 2);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
   a.download = '菁鷹備份-' + today() + '.json';
@@ -866,6 +1042,12 @@ document.addEventListener('click', async e => {
     case 'attend': attendSheet(id); break;
     case 'newPay': payForm(null, sid); break;
     case 'editPay': payForm(S.payments.find(p => p.id === id)); break;
+    case 'newTime': timeForm(null, { sid, item: b.dataset.item, back: b.dataset.back }); break;
+    case 'editTime': timeForm(S.times.find(t => t.id === id), { back: b.dataset.back }); break;
+    case 'timeHist': timeHistory(sid, b.dataset.item); break;
+    case 'timeItem': S.timeItem = v; render(); break;
+    case 'timeLevel': S.timeLevel = v; render(); break;
+    case 'classTimes': classTimeForm(id, b.dataset.d); break;
     case 'newLead': leadForm(); break;
     case 'lead': leadForm(S.leads.find(l => l.id === id)); break;
     case 'leadWon': { const l = S.leads.find(x => x.id === id); if (A()) convertLead(id); else if (l) { try { await updateDoc(doc(fs, 'leads', id), { status: 'won', closedDate: today() }); toast('已標記報名，請管理員建立學員資料'); } catch (err) { toast(fbErr(err)); } } break; }
