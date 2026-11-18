@@ -467,10 +467,12 @@ const shortDate = d => !d ? '' : d.startsWith(today().slice(0, 5)) ? d.slice(5).
 const gainText = (first, best) => { const g = first.time - best.time; return g > 0.004 ? ` · 進步 ${g.toFixed(2)} 秒` : ''; };
 
 function vTimes() {
-  let h = `<div class="row"><h2 class="vt grow">秒速紀錄</h2><button class="btn acc sm" data-act="newTime" ${S.students.length ? '' : 'disabled'}>＋ 秒速</button></div>`;
+  const dis = S.students.length ? '' : 'disabled';
+  let h = `<div class="row"><h2 class="vt grow">秒速紀錄</h2><button class="btn ghost sm" data-act="newTime" ${dis}>＋ 單筆</button></div>
+    <button class="btn acc swbig" data-act="classTimes" ${dis}><span class="swbig-i" aria-hidden="true">⏱</span><span class="grow"><b>碼錶測秒速</b><small>多人一起測，先連續按、之後再分配給學員</small></span></button>`;
   const todays = classesOn(today()).filter(c => (c.studentIds || []).length);
-  if (todays.length) h += `<div class="card"><div class="sub" style="margin-bottom:8px">今天的班級，一次記整班</div><div class="row wrap">${todays.map(c => `<button class="btn ghost sm" data-act="classTimes" data-id="${c.id}" data-d="${today()}">${esc(c.start)} ${esc(c.name)}</button>`).join('')}</div></div>`;
-  if (!S.times.length) return h + `<div class="empty"><b>還沒有秒速紀錄</b><span>幫學員計時後記在這裡，會自動算出每個人的最佳成績、進步幅度和排行榜。手機可以直接當碼錶用。</span>${S.students.length ? '<button class="btn" data-act="newTime">記第一筆秒速</button>' : '<span>先到「學員」新增學員。</span>'}</div>`;
+  if (todays.length) h += `<div class="card"><div class="sub" style="margin-bottom:8px">今天的班級，直接帶入學員</div><div class="row wrap">${todays.map(c => `<button class="btn ghost sm" data-act="classTimes" data-id="${c.id}" data-d="${today()}">${esc(c.start)} ${esc(c.name)}</button>`).join('')}</div></div>`;
+  if (!S.times.length) return h + `<div class="empty"><b>還沒有秒速紀錄</b><span>幫學員計時後記在這裡，會自動算出每個人的最佳成績、進步幅度和排行榜。手機可以直接當碼錶用。</span>${S.students.length ? '<span class="sub">按上面的「碼錶測秒速」開始，或用「＋ 單筆」手動輸入。</span>' : '<span>先到「學員」新增學員。</span>'}</div>`;
   const cnt = {}; for (const t of S.times) cnt[t.item] = (cnt[t.item] || 0) + 1;
   const items = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a] || a.localeCompare(b, 'zh-Hant'));
   const item = items.includes(S.timeItem) ? S.timeItem : items[0];
@@ -589,48 +591,69 @@ function timeForm(rec, o = {}) {
     };
   });
 }
+// 多人碼錶：先連續記下秒數，之後再分配給學員。cid 有值時預設帶入那個班，也可以切換成其他班或全部學員
 function classTimeForm(cid, date) {
-  const c = clsById(cid); if (!c) return;
-  const studs = (c.studentIds || []).map(stuById).filter(s => s && !s.archived);
-  if (!studs.length) return openSheet('測秒速 · ' + c.name, '<div class="empty"><b>這個班還沒有學員</b><span>先把學員加進班級，再來測秒速。</span></div>');
-  openSheet('測秒速 · ' + c.name, `<form class="form" id="f">
+  const actives = S.students.filter(s => !s.archived).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant'));
+  if (!actives.length) return openSheet('碼錶測秒速', '<div class="empty"><b>還沒有學員</b><span>先到「學員」新增學員，再來測秒速。</span></div>');
+  const groups = S.classes.filter(c => (c.studentIds || []).some(id => { const s = stuById(id); return s && !s.archived; }))
+    .sort((a, b) => (a.date ? 1 : 0) - (b.date ? 1 : 0) || ((a.weekday + 6) % 7) - ((b.weekday + 6) % 7) || (a.start || '').localeCompare(b.start || ''));
+  let grp = cid && groups.some(c => c.id === cid) ? cid : '';
+  const c0 = clsById(grp);
+  const vals = {};           // 每位學員目前的秒數文字（切換班級也不會不見）
+  const caps = []; let cur = null, seq = 0, running = false, q = '';
+  const grpLabel = c => `${c.date ? c.date.slice(5).replace('-', '/') : '週' + WD[c.weekday]} ${c.start || ''} ${c.name}`;
+  openSheet('碼錶測秒速', `<form class="form" id="f">
+    <div class="field"><label for="ct-grp">要測哪些學員</label><select id="ct-grp"><option value="">全部學員（${actives.length} 位）</option>${groups.map(c => `<option value="${c.id}" ${c.id === grp ? 'selected' : ''}>${esc(grpLabel(c))}</option>`).join('')}</select></div>
     <div class="two"><div class="field"><label for="ct-item">項目</label><input id="ct-item" list="dl-titem" required value="${esc(lastItem())}" placeholder="100 公尺">${dataList('dl-titem', timeItems())}</div>
     <div class="field"><label for="ct-date">日期</label><input id="ct-date" type="date" required value="${esc(date || today())}"></div></div>
     ${swBlock('', true)}
     <div id="ct-caps"></div>
     <div class="assign" id="ct-assign" hidden></div>
-    <div class="list" id="ct-list">${studs.map(s => `<div class="att trow" data-sid="${s.id}"><button type="button" class="grow tname" data-pick="${s.id}"><span class="nm">${esc(s.name)}</span><span class="sub" data-pb="${s.id}"></span></button>
-      <input class="tin" id="ct-${s.id}" inputmode="decimal" autocomplete="off" placeholder="秒數" aria-label="${esc(s.name)} 的秒數"></div>`).join('')}</div>
+    <input class="search" id="ct-q" type="search" placeholder="搜尋學員姓名" hidden>
+    <div class="list" id="ct-list"></div>
     <div class="sub">也可以不用碼錶，直接在右邊輸入秒數。沒測的人留空白。</div>
     <button class="btn" type="submit">儲存秒數</button></form>`, sh => {
-    const item = $('#ct-item', sh), list = $('#ct-list', sh), hintEl = $('#sw-hint', sh), capsEl = $('#ct-caps', sh), bar = $('#ct-assign', sh);
-    const inp = sid => document.getElementById('ct-' + sid), val = t => t.toFixed(2);
-    // caps：碼錶先記下來、還沒（或已經）分配給學員的秒數；cur：現在要分配的那一筆
-    const caps = []; let cur = null, seq = 0, running = false;
+    const item = $('#ct-item', sh), list = $('#ct-list', sh), hintEl = $('#sw-hint', sh), capsEl = $('#ct-caps', sh), bar = $('#ct-assign', sh), qEl = $('#ct-q', sh);
+    const val = t => t.toFixed(2);
+    const members = () => { const c = clsById(grp); return c ? (c.studentIds || []).map(stuById).filter(s => s && !s.archived) : actives; };
+    const renderList = () => {
+      const ms = members(); qEl.hidden = ms.length <= 10;
+      const k = q.trim().toLowerCase(), shown = k ? ms.filter(s => (s.name || '').toLowerCase().includes(k)) : ms;
+      const it = item.value.trim();
+      list.innerHTML = shown.length ? shown.map(s => { const b = it ? bestTime(s.id, it) : Infinity; return `<div class="att trow" data-sid="${s.id}"><button type="button" class="grow tname" data-pick="${s.id}"><span class="nm">${esc(s.name)}</span><span class="sub">${b < Infinity ? '最佳 ' + fmtTime(b) : (it ? '還沒有紀錄' : '')}</span></button>
+        <input class="tin" data-tin="${s.id}" inputmode="decimal" autocomplete="off" placeholder="秒數" aria-label="${esc(s.name)} 的秒數" value="${esc(vals[s.id] || '')}"></div>`; }).join('') : '<div class="empty">找不到這位學員</div>';
+    };
+    const setVal = (sid, v) => { if (v) vals[sid] = v; else delete vals[sid]; const el = list.querySelector(`[data-tin="${sid}"]`); if (el) el.value = v || ''; };
     const draw = () => {
       const pend = caps.filter(x => !x.sid);
       let k = caps.find(x => x.id === cur); if (!k) { k = pend[0]; cur = k ? k.id : null; }
       capsEl.innerHTML = caps.length ? `<div class="caps">${caps.map(x => { const s = x.sid && stuById(x.sid); return `<span class="cap${x.id === cur ? ' on' : ''}${s ? ' done' : ''}"><button type="button" class="cap-b" data-cap="${x.id}"><span class="cap-n">${x.old ? '上一趟 ' : ''}第 ${x.n} 位</span><span class="cap-t">${fmtTime(x.t)}</span><span class="cap-s">${s ? esc(s.name) : '待分配'}</span></button><button type="button" class="cap-x" data-capdel="${x.id}" aria-label="刪除第 ${x.n} 位的 ${fmtTime(x.t)}">✕</button></span>`; }).join('')}</div>` : '';
       bar.hidden = !k; if (k) bar.innerHTML = `<b>${k.old ? '上一趟 ' : ''}第 ${k.n} 位 ${fmtTime(k.t)}</b>是誰？點下面學員的名字${k.sid ? '，會改記給他' : ''}`;
-      hintEl.textContent = running ? '每到一位就按一次「記一筆」，全部到了再按「結束」。' : !caps.length ? '全班一起出發：按「開始計時」，每到一位按一次「記一筆」。秒數先記下來，結束後再分配給學員。' : pend.length ? `還有 ${pend.length} 筆秒數沒分配。按錯的可以按 ✕ 刪掉。` : '都分配好了，可以按「儲存秒數」。';
+      hintEl.textContent = running ? '每到一位就按一次「記一筆」，全部到了再按「結束」。' : !caps.length ? '一起出發：按「開始計時」，每到一位按一次「記一筆」，可以連續按。秒數先記下來，結束後再分配給學員。' : pend.length ? `還有 ${pend.length} 筆秒數沒分配。按錯的可以按 ✕ 刪掉。` : '都分配好了，可以按「儲存秒數」。';
     };
     const assign = sid => {
-      const k = caps.find(x => x.id === cur); if (!k) { inp(sid).focus(); return; }
+      const k = caps.find(x => x.id === cur);
+      if (!k) { const el = list.querySelector(`[data-tin="${sid}"]`); if (el) el.focus(); return; }
       for (const x of caps) if (x.sid === sid && x !== k) x.sid = null;
-      if (k.sid && k.sid !== sid && inp(k.sid).value === val(k.t)) inp(k.sid).value = '';
-      k.sid = sid; inp(sid).value = val(k.t);
-      const next = caps.find(x => !x.sid); cur = next ? next.id : null; draw();
+      if (k.sid && k.sid !== sid && vals[k.sid] === val(k.t)) setVal(k.sid, '');
+      k.sid = sid; setVal(sid, val(k.t));
+      const next = caps.find(x => !x.sid); cur = next ? next.id : null;
+      if (q) { q = ''; qEl.value = ''; renderList(); }
+      draw();
     };
-    const pbs = () => { const it = item.value.trim(); for (const s of studs) { const b = it ? bestTime(s.id, it) : Infinity; list.querySelector(`[data-pb="${s.id}"]`).textContent = b < Infinity ? `最佳 ${fmtTime(b)}` : (it ? '還沒有紀錄' : ''); } };
-    item.oninput = pbs; pbs(); draw();
+    renderList(); draw();
+    $('#ct-grp', sh).onchange = e => { grp = e.target.value; q = ''; qEl.value = ''; renderList(); };
+    item.oninput = renderList;
+    qEl.oninput = () => { q = qEl.value; renderList(); };
+    list.addEventListener('input', e => { const el = e.target.closest('[data-tin]'); if (el) { const v = el.value.trim(); if (v) vals[el.dataset.tin] = el.value; else delete vals[el.dataset.tin]; } });
     list.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) assign(b.dataset.pick); });
     capsEl.addEventListener('click', e => {
       const x = e.target.closest('[data-capdel]');
-      if (x) { const i = caps.findIndex(k => k.id === x.dataset.capdel); if (i < 0) return; const k = caps[i]; if (k.sid && inp(k.sid).value === val(k.t)) inp(k.sid).value = ''; caps.splice(i, 1); if (cur === k.id) cur = null; draw(); return; }
+      if (x) { const i = caps.findIndex(k => k.id === x.dataset.capdel); if (i < 0) return; const k = caps[i]; if (k.sid && vals[k.sid] === val(k.t)) setVal(k.sid, ''); caps.splice(i, 1); if (cur === k.id) cur = null; draw(); return; }
       const b = e.target.closest('[data-cap]'); if (b) { cur = b.dataset.cap; draw(); }
     });
     stopwatch(sh, {
-      // 新的一趟：已經分配好的秒數留在學員欄位裡，從清單收掉；還沒分配的留著，標成「上一趟」
+      // 新的一趟：已分配的秒數留在學員欄位裡，從清單收掉；還沒分配的留著，標成「上一趟」
       onStart: () => { running = true; for (let i = caps.length - 1; i >= 0; i--) { if (caps[i].sid) caps.splice(i, 1); else caps[i].old = true; } cur = null; draw(); },
       onLap: (t, n) => { caps.push({ id: 'k' + (++seq), t, n }); draw(); },
       onStop: (t, n) => { running = false; if (!n) caps.push({ id: 'k' + (++seq), t, n: 1 }); draw(); },
@@ -642,10 +665,10 @@ function classTimeForm(cid, date) {
       const pend = caps.filter(x => !x.sid).length;
       if (pend) { toast(`還有 ${pend} 筆秒數沒分配。點學員的名字分配，或按 ✕ 刪掉再儲存。`); return; }
       const recs = [];
-      for (const s of studs) { const el = inp(s.id), v = el.value.trim(); if (!v) continue; const t = parseTime(v); if (!(t > 0)) { toast(`${s.name} 的秒數格式不對，請輸入像 12.34`); el.focus(); return; } recs.push({ s, t }); }
+      for (const s of actives) { const v = (vals[s.id] || '').trim(); if (!v) continue; const t = parseTime(v); if (!(t > 0)) { toast(`${s.name} 的秒數格式不對，請輸入像 12.34`); q = s.name; qEl.value = s.name; renderList(); return; } recs.push({ s, t }); }
       if (!recs.length) { toast('還沒有輸入任何秒數'); return; }
       const b = writeBatch(fs), now = Date.now(); let n = 0;
-      recs.forEach(({ s, t }, i) => { const prev = bestTime(s.id, it); if (t < prev && prev < Infinity) n++; b.set(doc(fs, 'times', newId()), { studentId: s.id, item: it, time: t, date: dt, note: '', by: S.me.uid, createdAt: now + i, classId: cid }); });
+      recs.forEach(({ s, t }, i) => { const prev = bestTime(s.id, it); if (t < prev && prev < Infinity) n++; const d = { studentId: s.id, item: it, time: t, date: dt, note: '', by: S.me.uid, createdAt: now + i }; if (grp) d.classId = grp; b.set(doc(fs, 'times', newId()), d); });
       try { await b.commit(); toast(`已記錄 ${recs.length} 位的秒數${n ? `，${n} 位破個人紀錄` : ''}`); closeSheet(); } catch (err) { toast(fbErr(err)); }
     };
   });

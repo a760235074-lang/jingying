@@ -277,3 +277,7 @@ nav.tabs{border-radius:22px 22px 0 0;box-shadow:0 -2px 14px rgba(168,64,111,.08)
 .assign{position:sticky;top:40px;z-index:1;background:var(--brand);color:var(--brand-ink);border-radius:14px;padding:10px 14px;font-size:14px;box-shadow:var(--shadow)}
 .assign b{font-family:var(--font-num);font-variant-numeric:tabular-nums;font-size:17px;margin-right:6px}
 .sw-row .btn.ghost{align-self:center}
+.swbig{display:flex;align-items:center;gap:12px;text-align:left;border-radius:var(--r);padding:14px 18px;width:100%}
+.swbig-i{font-size:28px;line-height:1}
+.swbig b{display:block;font-size:17px}
+.swbig small{display:block;font-weight:500;opacity:.85;font-size:12.5px;margin-top:2px}
