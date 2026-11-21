@@ -298,8 +298,8 @@ function weekStrip() {
 function vToday() {
   const d = parseYmd(S.day), wd = d.getDay(), isToday = S.day === today();
   let list = classesOn(S.day);
-  const myCount = list.filter(c => c.coachUid === S.me.uid).length;
-  if (S.mine && !A()) list = list.filter(c => c.coachUid === S.me.uid);
+  const myCount = list.filter(c => hasCoach(c, S.me.uid)).length;
+  if (S.mine && !A()) list = list.filter(c => hasCoach(c, S.me.uid));
   let h = `<div class="daybar"><button class="round" data-act="wkPrev" aria-label="上一週">‹</button>
     <div class="d"><div class="big">${d.getMonth() + 1}/${d.getDate()}</div><div class="sub">星期${WD[wd]}${isToday ? ' · 今天' : ''}</div></div>
     <button class="round" data-act="wkNext" aria-label="下一週">›</button></div>${weekStrip()}`;
@@ -313,7 +313,7 @@ function vToday() {
     const pill = ss && ss.cancelled ? '<span class="pill bad">停課</span>' : ss ? `<span class="pill ok">已點名 <span class="num">${p}/${n}</span></span>` : `<span class="pill info"><span class="num">${n}</span> 人 · 點名</span>`;
     return `<button class="cls ${ss && !ss.cancelled ? 'done' : ''}${ss && ss.cancelled ? ' off' : ''}" data-act="attend" data-id="${c.id}">
       <div class="time">${esc(c.start)}<small>${esc(endTime(c.start, c.duration))}</small></div>
-      <div style="min-width:0"><div class="name">${esc(c.name)}${c.date ? ' <span class="pill warn">單次</span>' : ''}</div><div class="meta">${esc([userName(c.coachUid), c.location].filter(Boolean).join(' · '))}</div></div>
+      <div style="min-width:0"><div class="name">${esc(c.name)}${c.date ? ' <span class="pill warn">單次</span>' : ''}</div><div class="meta">${esc([coachNames(c), c.location].filter(Boolean).join(' · '))}</div></div>
       <div>${pill}</div></button>`;
   }).join('');
   const trials = S.leads.filter(l => l.trialDate === S.day && leadOpen(l));
@@ -336,7 +336,7 @@ function vWeek() {
   if (!S.classes.length) return `<div class="view">${h}<div class="empty"><b>還沒有班級</b>${A() ? '<span>每週固定的班級會自動出現在「今日」；單次的補課或加課也可以在這裡建立。</span><button class="btn" data-act="newClass">建立第一個班級</button>' : '<span>等管理員建立班級。</span>'}</div></div>`;
   const item = c => `<button class="item" data-act="${A() ? 'editClass' : 'viewClass'}" data-id="${c.id}">
       <span class="num" style="font-size:19px;font-weight:700;width:52px">${esc(c.start)}</span>
-      <div class="grow"><div class="t">${esc(c.name)} ${c.level ? `<span class="pill info">${esc(c.level)}</span>` : ''}${c.coachUid === S.me.uid ? ' <span class="pill ok">我的</span>' : ''}</div><div class="s">${esc([c.date ? c.date.slice(5).replace('-', '/') + ' 週' + WD[parseYmd(c.date).getDay()] : '', userName(c.coachUid) || '未指定教練', c.location, (c.studentIds || []).length + ' 位學員'].filter(Boolean).join(' · '))}</div></div><span class="chev">›</span></button>`;
+      <div class="grow"><div class="t">${esc(c.name)} ${c.level ? `<span class="pill info">${esc(c.level)}</span>` : ''}${hasCoach(c, S.me.uid) ? ' <span class="pill ok">我的</span>' : ''}</div><div class="s">${esc([c.date ? c.date.slice(5).replace('-', '/') + ' 週' + WD[parseYmd(c.date).getDay()] : '', coachNames(c) || '未指定教練', c.location, (c.studentIds || []).length + ' 位學員'].filter(Boolean).join(' · '))}</div></div><span class="chev">›</span></button>`;
   for (const wd of [1, 2, 3, 4, 5, 6, 0]) {
     const list = weekly.filter(c => +c.weekday === wd).sort((a, b) => (a.start || '').localeCompare(b.start || ''));
     if (list.length) h += `<div class="wd">星期${WD[wd]}</div><div class="list">${list.map(item).join('')}</div>`;
@@ -368,6 +368,9 @@ function vStuList() {
   const tags = allTags();
   if (tags.length) h += chips('tag', S.tag, [['', '全部標籤'], ...tags.map(t => [t, t])]);
   h += `<input class="search" id="q" type="search" placeholder="搜尋姓名、家長、電話" value="${esc(S.q)}">`;
+  return h + `<div id="stu-results">${stuResults()}</div>`;
+}
+function stuResults() {
   const q = S.q.trim().toLowerCase();
   const list = S.students.filter(s => {
     const st = stuState(s);
@@ -377,8 +380,7 @@ function vStuList() {
     if (S.tag && !(s.tags || []).includes(S.tag)) return false;
     return !q || [s.name, s.parent, s.phone].join(' ').toLowerCase().includes(q);
   }).sort((a, b) => lessonsOf(a.id).left - lessonsOf(b.id).left || (a.name || '').localeCompare(b.name || '', 'zh-Hant'));
-  h += list.length ? `<div class="list">${list.map(stuItem).join('')}</div>` : `<div class="empty">沒有符合的學員</div>`;
-  return h;
+  return list.length ? `<div class="list">${list.map(stuItem).join('')}</div>` : `<div class="empty">沒有符合的學員</div>`;
 }
 
 /* ---------- 招生名單 ---------- */
@@ -644,7 +646,8 @@ function classTimeForm(cid, date) {
     renderList(); draw();
     $('#ct-grp', sh).onchange = e => { grp = e.target.value; q = ''; qEl.value = ''; renderList(); };
     item.oninput = renderList;
-    qEl.oninput = () => { q = qEl.value; renderList(); };
+    qEl.addEventListener('input', e => { if (e.isComposing) return; q = qEl.value; renderList(); });
+    qEl.addEventListener('compositionend', () => { q = qEl.value; renderList(); });
     list.addEventListener('input', e => { const el = e.target.closest('[data-tin]'); if (el) { const v = el.value.trim(); if (v) vals[el.dataset.tin] = el.value; else delete vals[el.dataset.tin]; } });
     list.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) assign(b.dataset.pick); });
     capsEl.addEventListener('click', e => {
@@ -696,7 +699,7 @@ function vPay() {
 }
 
 /* ---------- 我的（教練） ---------- */
-function monthSessions(uid) { return S.sessions.filter(s => !s.cancelled && (s.date || '').startsWith(S.month) && (!uid || s.coachUid === uid)); }
+function monthSessions(uid) { return S.sessions.filter(s => !s.cancelled && (s.date || '').startsWith(S.month) && (!uid || hasCoach(s, uid))); }
 function attStats(ses) { let p = 0, l = 0, a = 0; for (const s of ses) for (const v of Object.values(s.status || {})) { if (v === 'present') p++; else if (v === 'leave') l++; else if (v === 'absent') a++; } return { p, l, a, t: p + l + a }; }
 function vMine() {
   const ses = monthSessions(S.me.uid); const st = attStats(ses);
@@ -760,7 +763,7 @@ function vStats() {
 }
 function vManage() {
   const ses = monthSessions(); const st = attStats(ses);
-  const by = {}; for (const s of ses) { const k = s.coachUid || ''; by[k] = by[k] || { n: 0, p: 0 }; by[k].n++; by[k].p += attStats([s]).p; }
+  const by = {}; for (const s of ses) { const ks = coachIds(s); for (const k of (ks.length ? ks : [''])) { by[k] = by[k] || { n: 0, p: 0 }; by[k].n++; by[k].p += attStats([s]).p; } }
   const pend = S.users.filter(u => u.role === 'pending');
   let h = '';
   if (pend.length) h += `<div class="banner">有 ${pend.length} 位教練等待開通：${esc(pend.map(u => u.name || u.email).join('、'))}</div>`;
@@ -901,6 +904,11 @@ function levelForm(sid) {
     };
   });
 }
+// 一堂課可以有好幾位教練：新資料存 coachUids 陣列；舊資料只有 coachUid，照樣讀得到
+const coachIds = x => !x ? [] : Array.isArray(x.coachUids) ? x.coachUids.filter(Boolean) : (x.coachUid ? [x.coachUid] : []);
+const coachNames = x => coachIds(x).map(userName).filter(Boolean).join('、');
+const hasCoach = (x, uid) => coachIds(x).includes(uid);
+const coachPick = (name, sel) => { const ids = new Set(sel); const list = coaches(); return list.length ? `<div class="chk">${list.map(u => `<label><input type="checkbox" name="${name}" value="${u.id}" ${ids.has(u.id) ? 'checked' : ''}>${esc(u.name || u.email)}</label>`).join('')}</div>` : '<div class="sub">還沒有開通的教練。</div>'; };
 function coachOptions(sel) { return '<option value="">未指定</option>' + coaches().map(u => `<option value="${u.id}" ${u.id === sel ? 'selected' : ''}>${esc(u.name || u.email)}</option>`).join(''); }
 function classForm(c, wd) {
   c = c || { weekday: wd != null ? wd : new Date().getDay(), start: '18:00', duration: 60 };
@@ -914,18 +922,18 @@ function classForm(c, wd) {
     <div class="field"><label for="c-level">程度</label><select id="c-level" name="level"><option value="">—</option>${opts(LEVELS, c.level)}</select></div></div>
     <div class="two"><div class="field"><label for="c-start">開始時間</label><input id="c-start" name="start" type="time" required value="${esc(c.start)}"></div>
     <div class="field"><label for="c-dur">每堂分鐘</label><input id="c-dur" name="duration" type="number" inputmode="numeric" min="15" step="15" value="${esc(c.duration)}"></div></div>
-    <div class="two"><div class="field"><label for="c-coach">教練</label><select id="c-coach" name="coachUid">${coachOptions(c.coachUid)}</select></div>
-    <div class="field"><label for="c-loc">場地</label><input id="c-loc" name="location" list="dl-loc" value="${esc(c.location)}" placeholder="板橋第一運動場">${dataList('dl-loc', S.settings.locations || [])}</div></div>
+    <div class="field"><label>教練（可以選好幾位）</label>${coachPick('coach', coachIds(c))}</div>
+    <div class="field"><label for="c-loc">場地</label><input id="c-loc" name="location" list="dl-loc" value="${esc(c.location)}" placeholder="板橋第一運動場">${dataList('dl-loc', S.settings.locations || [])}</div>
     <div class="field"><label>上課學員（已選 ${sel.size} 位）</label>
     ${studs.length ? `<div class="chk">${studs.map(s => `<label><input type="checkbox" name="sid" value="${s.id}" ${sel.has(s.id) ? 'checked' : ''}>${esc(s.name)}</label>`).join('')}</div>` : '<div class="sub">先到「學員」新增學員，再回來勾選。</div>'}</div>
     <button class="btn" type="submit">${c.id ? '儲存' : once ? '建立單次課程' : '建立班級'}</button>
     ${c.id ? delBlock('classes', c.id, '班級') : ''}</form>`, sh => {
-    sh.querySelectorAll('[data-act="classKind"]').forEach(b => b.onclick = ev => { ev.stopPropagation(); const fd = new FormData($('#f', sh)); classForm({ ...c, name: fd.get('name'), level: fd.get('level'), start: fd.get('start'), duration: fd.get('duration'), coachUid: fd.get('coachUid'), location: fd.get('location'), studentIds: fd.getAll('sid'), _once: b.dataset.v === 'once' }, wd); });
+    sh.querySelectorAll('[data-act="classKind"]').forEach(b => b.onclick = ev => { ev.stopPropagation(); const fd = new FormData($('#f', sh)); classForm({ ...c, name: fd.get('name'), level: fd.get('level'), start: fd.get('start'), duration: fd.get('duration'), coachUids: fd.getAll('coach'), location: fd.get('location'), studentIds: fd.getAll('sid'), _once: b.dataset.v === 'once' }, wd); });
     $('#f', sh).onsubmit = async e => {
       e.preventDefault();
       const fd = new FormData(e.target);
       const d = { name: fd.get('name').trim(), level: fd.get('level'), start: fd.get('start'), duration: +fd.get('duration') || 60,
-        coachUid: fd.get('coachUid'), location: fd.get('location').trim(), studentIds: fd.getAll('sid'), createdAt: c.createdAt || Date.now() };
+        coachUids: fd.getAll('coach'), coachUid: fd.getAll('coach')[0] || '', location: fd.get('location').trim(), studentIds: fd.getAll('sid'), createdAt: c.createdAt || Date.now() };
       if (once) d.date = fd.get('date'); else d.weekday = +fd.get('weekday');
       if (!d.name) return;
       if (await save('classes', c.id, d)) {
@@ -940,7 +948,7 @@ function viewClass(cid) {
   const c = clsById(cid); if (!c) return;
   const studs = (c.studentIds || []).map(stuById).filter(Boolean);
   openSheet(c.name, `<div class="card"><dl class="kv"><dt>時間</dt><dd>${c.date ? esc(c.date) : '星期' + WD[c.weekday]} ${esc(c.start)}–${esc(endTime(c.start, c.duration))}</dd>
-    <dt>教練</dt><dd>${esc(userName(c.coachUid) || '未指定')}</dd><dt>場地</dt><dd>${esc(c.location || '—')}</dd><dt>程度</dt><dd>${esc(c.level || '—')}</dd></dl></div>
+    <dt>教練</dt><dd>${esc(coachNames(c) || '未指定')}</dd><dt>場地</dt><dd>${esc(c.location || '—')}</dd><dt>程度</dt><dd>${esc(c.level || '—')}</dd></dl></div>
     <div class="sec-h"><h3>學員 ${studs.length} 位</h3></div>
     ${studs.length ? `<div class="list">${studs.map(stuItem).join('')}</div>` : '<div class="empty">還沒有學員</div>'}`);
 }
@@ -998,9 +1006,9 @@ function attendSheet(cid) {
   if (ss && ss.cancelled) return openSheet(title, `<div class="empty"><b>這堂已停課</b><span>${esc(ss.reason || '')}</span><span>停課不會扣任何人的堂數。</span>
     <button class="btn" id="a-undo">恢復這堂課</button></div>`, sh => { $('#a-undo', sh).onclick = async () => { if (await del('sessions', cid + '_' + S.day)) { toast('已恢復'); closeSheet(); } }; });
   openSheet(title, `
-    <div class="row"><div class="sub grow">${esc([c.start + '–' + endTime(c.start, c.duration), userName(c.coachUid), c.location].filter(Boolean).join(' · '))}</div>${studs.length ? '<button class="btn ghost sm" type="button" id="a-times">測秒速</button>' : ''}</div>
+    <div class="row"><div class="sub grow">${esc([c.start + '–' + endTime(c.start, c.duration), coachNames(c), c.location].filter(Boolean).join(' · '))}</div>${studs.length ? '<button class="btn ghost sm" type="button" id="a-times">測秒速</button>' : ''}</div>
     ${studs.length ? `<div class="list" id="attl">${draw()}</div>
-    <div class="field"><label for="a-coach">本堂教練</label><select id="a-coach">${coachOptions((ss && ss.coachUid) || c.coachUid || S.me.uid)}</select></div>
+    <div class="field" id="a-coach"><label>本堂教練（有來的都勾）</label>${coachPick('acoach', coachIds(ss).length ? coachIds(ss) : coachIds(c).length ? coachIds(c) : [S.me.uid])}</div>
     <div class="field"><label for="a-note">課堂紀錄</label><textarea id="a-note" placeholder="今天練了交叉步、T 字煞車…">${esc(ss && ss.note)}</textarea></div>
     <button class="btn" id="a-save">${ss ? '更新點名' : '完成點名'}</button>
     ${ss ? '<button class="btn ghost" id="a-clear">取消這堂點名（退回堂數）</button>' : ''}`
@@ -1009,16 +1017,19 @@ function attendSheet(cid) {
       <div class="form" style="margin-top:10px"><div class="field"><label for="a-reason">停課原因</label><input id="a-reason" placeholder="颱風停課"></div>
       <button class="btn danger" id="a-cancel" type="button">確定停課，不扣任何人的堂數</button></div></details>`, sh => {
     $('#a-cancel', sh).onclick = async () => {
-      const d = { classId: cid, date: S.day, cancelled: true, reason: $('#a-reason', sh).value.trim(), status: {}, coachUid: c.coachUid || '', updatedBy: S.me.uid, updatedAt: Date.now() };
+      const d = { classId: cid, date: S.day, cancelled: true, reason: $('#a-reason', sh).value.trim(), status: {}, coachUids: coachIds(c), coachUid: coachIds(c)[0] || '', updatedBy: S.me.uid, updatedAt: Date.now() };
       if (await save('sessions', cid + '_' + S.day, d)) { toast('已停課'); closeSheet(); }
     };
     const l = $('#attl', sh); if (!l) return;
     let dirty = false;
     l.addEventListener('click', e => { const b = e.target.closest('[data-v]'); if (!b) return; status[b.parentElement.dataset.sid] = b.dataset.v; dirty = true; l.innerHTML = draw(); });
     $('#a-note', sh).addEventListener('input', () => { dirty = true; });
+    $('#a-coach', sh).addEventListener('change', () => { dirty = true; });
     $('#a-times', sh).onclick = () => { if (dirty) { toast('請先按「' + (ss ? '更新點名' : '完成點名') + '」儲存，再測秒速'); return; } classTimeForm(cid, S.day); };
     $('#a-save', sh).onclick = async () => {
-      const d = { classId: cid, date: S.day, status, coachUid: $('#a-coach', sh).value, note: $('#a-note', sh).value, updatedBy: S.me.uid, updatedAt: Date.now() };
+      const cs = [...sh.querySelectorAll('input[name=acoach]:checked')].map(x => x.value);
+      if (!cs.length) { toast('請至少勾一位本堂教練'); return; }
+      const d = { classId: cid, date: S.day, status, coachUids: cs, coachUid: cs[0], note: $('#a-note', sh).value, updatedBy: S.me.uid, updatedAt: Date.now() };
       if (await save('sessions', cid + '_' + S.day, d)) { toast('點名完成'); closeSheet(); }
     };
     const cl = $('#a-clear', sh); if (cl) cl.onclick = async () => { if (await del('sessions', cid + '_' + S.day)) { toast('已取消點名'); closeSheet(); } };
@@ -1122,8 +1133,7 @@ document.addEventListener('click', async e => {
     case 'doDel': if (await del(b.dataset.kind, id)) { toast('已刪除'); closeSheet(); } break;
   }
 });
-document.addEventListener('input', e => {
-  if (e.target.id !== 'q') return;
-  S.q = e.target.value; const pos = e.target.selectionStart; render();
-  const q = $('#q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch (_) {} }
-});
+// 搜尋時只更新下面的名單，不重畫搜尋框：注音、拼音輸入選字中（composing）先不動，選完字才搜尋
+const runStuSearch = el => { S.q = el.value; const r = $('#stu-results'); if (r) r.innerHTML = stuResults(); };
+document.addEventListener('input', e => { if (e.target.id === 'q' && !e.isComposing) runStuSearch(e.target); });
+document.addEventListener('compositionend', e => { if (e.target.id === 'q') runStuSearch(e.target); });
